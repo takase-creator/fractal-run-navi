@@ -9,9 +9,11 @@
     km: S.settings.get('lastKm') || 5,
     mode: S.settings.get('lastMode') || 'loop',
     cat: S.settings.get('lastCat') || 'any',
+    hills: S.settings.get('hills') || 'any',
     results: [],
     route: null,
-    searching: null        // {aborted}
+    searching: null,       // {aborted}
+    seenStops: new Set()   // for 「別のコースを探す」
   };
 
   /* =============== view switching =============== */
@@ -19,9 +21,9 @@
   function show(name) {
     VIEWS.forEach(v => { const n = $('#view-' + v); if (n) n.hidden = (v !== name); });
     $$('#tabbar .tab').forEach(t => t.classList.toggle('is-on', t.dataset.tab === name));
-    if (name === 'detail') RN.mapview.invalidate();
+    if (name === 'detail') RN.mapview.invalidate('map');
     if (name === 'log') renderLog();
-    if (name === 'run') renderRun(RN.tracker.snapshot());
+    if (name === 'run') { renderRun(RN.tracker.snapshot()); RN.mapview.invalidate('runmap'); }
     window.scrollTo(0, 0);
   }
   $$('#tabbar .tab').forEach(t => t.onclick = () => show(t.dataset.tab));
@@ -147,7 +149,28 @@
     state.cat = b.dataset.cat;
     S.settings.set('lastCat', state.cat);
     $$('#cat-chips .chip').forEach(x => x.classList.toggle('is-on', x === b));
+    paintCatHint();
   });
+  $$('#hill-chips .chip').forEach(b => b.onclick = () => {
+    state.hills = b.dataset.hills;
+    S.settings.set('hills', state.hills);
+    $$('#hill-chips .chip').forEach(x => x.classList.toggle('is-on', x === b));
+    // re-rank what is already on screen instead of making the user search again
+    if (state.results.length) {
+      P.applyHillPreference(state.results, state.hills, state.km * 1000);
+      state.results.forEach((r, i) => r.rank = i + 1);
+      renderResults(state.results);
+    }
+  });
+
+  function paintCatHint() {
+    const g = engineId() === 'google';
+    $('#cat-hint').innerHTML = g
+      ? 'Googleの<b>クチコミ件数</b>が多い順に優先して経由します。'
+      : state.cat === 'food'
+        ? '⚠︎ オープンデータには飲食店の人気度がありません。カフェ・飲食で選ぶなら<b>設定でGoogle APIキー</b>の登録をおすすめします。'
+        : '<b>Wikipediaの月間閲覧数</b>と<b>公園などの面積</b>から人気度を推定して経由します。';
+  }
 
   /* =============== 検索 =============== */
   const btnSearch = $('#btn-search');
@@ -162,7 +185,7 @@
     }
   }
 
-  btnSearch.onclick = async () => {
+  async function runSearch(reroll) {
     if (state.searching) { state.searching.aborted = true; return; }
     const origin = await resolveOrigin(false);
     if (!origin) return;
@@ -170,11 +193,16 @@
     S.addOrigin(origin);
     renderOriginHistory();
     if (state.candidates.length > 1) renderCandidates();
+    loadWeather(origin);
+
+    if (!reroll) state.seenStops = new Set();
 
     const sig = { aborted: false };
     state.searching = sig;
     btnSearch.querySelector('.btn-label').textContent = '中止する';
+    $('#btn-reroll').classList.add('hidden');
     $('#results').innerHTML = '';
+    state.results = [];
     progress(0.02, '準備中…');
 
     try {
@@ -185,21 +213,53 @@
         targetMeters: state.km * 1000,
         mode: state.mode,
         category: state.cat,
+        hills: state.hills,
+        exclude: state.seenStops,
         onProgress: progress,
+        // show the first course the moment it exists rather than after the
+        // whole search — most of the wait is the routes we end up discarding
+        onPartial: rs => { state.results = rs; renderResults(rs, true); },
         signal: sig
       });
       state.results = routes;
+      routes.forEach(r => r.stops.forEach(s => { if (!s.ghost) state.seenStops.add(s.id); }));
       renderResults(routes);
+      $('#btn-reroll').classList.toggle('hidden', !routes.length);
       if (!routes.length) U.toast('条件に合うコースが見つかりませんでした', true);
     } catch (e) {
       if (String(e.message) === 'ABORT') U.toast('検索を中止しました');
       else { console.error(e); U.toast(e.message || '検索に失敗しました', true); }
+      if (state.results.length) $('#btn-reroll').classList.remove('hidden');
     } finally {
       state.searching = null;
       btnSearch.querySelector('.btn-label').textContent = 'コースを探す';
       $('#search-progress').classList.add('hidden');
     }
-  };
+  }
+
+  btnSearch.onclick = () => runSearch(false);
+  $('#btn-reroll').onclick = () => runSearch(true);
+
+  /* =============== 天気 =============== */
+  async function loadWeather(origin) {
+    const box = $('#wx');
+    try {
+      const w = await RN.weather.get(origin);
+      const lv = (w.advice && w.advice.level) || 0;
+      box.className = 'wx lv' + lv;
+      box.hidden = false;
+      box.innerHTML = `
+        <div class="wx-ico">${w.icon}</div>
+        <div class="wx-body">
+          <div class="wx-main">${U.esc(w.desc)} ${w.temp != null ? w.temp.toFixed(1) + '℃' : ''}
+            <small>体感 ${w.apparent != null ? w.apparent.toFixed(1) + '℃' : '–'}
+            ・湿度 ${w.humidity != null ? w.humidity + '%' : '–'}
+            ・風 ${w.wind != null ? w.wind.toFixed(0) + 'km/h' : '–'}</small></div>
+          <div class="wx-sub">${w.advice ? U.esc(w.advice.text) : ''}${w.popNext3h != null
+          ? `　／　3時間以内の降水確率 ${w.popNext3h}%` : ''}</div>
+        </div>`;
+    } catch (e) { box.hidden = true; }
+  }
 
   /* =============== 結果 =============== */
   function etaSec(meters) {
@@ -207,12 +267,15 @@
     return { sec: (meters / 1000) * pm.sec, model: pm };
   }
 
-  function renderResults(routes) {
+  function renderResults(routes, provisional) {
     const box = $('#results');
     box.innerHTML = '';
     if (!routes.length) return;
 
-    const h = U.el('div', 'field-label', `${routes.length}件のコース（${state.km}km ${P.MODE_LABEL[state.mode]}）`);
+    const h = U.el('div', 'field-label',
+      provisional
+        ? `${routes.length}件見つかりました（さらに探索中…）`
+        : `${routes.length}件のコース（${state.km}km ${P.MODE_LABEL[state.mode]}）`);
     h.style.margin = '4px 2px 8px';
     box.appendChild(h);
 
@@ -236,9 +299,13 @@
         <div class="res-nums">
           <div class="v-good"><b>${U.km(r.distance)}</b><em>km</em></div>
           <div><b>${U.hms(eta.sec)}</b><em>予想タイム</em></div>
-          <div><b>${U.pace(eta.model.sec)}</b><em>ペース /km</em></div>
+          <div><b>${r.elev ? '↑' + r.elev.gain + 'm' : '–'}</b><em>獲得標高</em></div>
         </div>
-        <div class="res-stops"></div>`;
+        <div class="res-stops"></div>
+        ${r.elev ? `<div class="elev">
+          <div class="elev-chart">${RN.terrain.sparkline(r.elev, 300, 40)}</div>
+          <div class="elev-num"><b>${U.esc(r.elev.label.text)}</b><em>最大勾配 ${r.elev.maxGrade}%</em></div>
+        </div>` : ''}`;
 
       const stopsBox = card.querySelector('.res-stops');
       r.stops.forEach(s => {
@@ -257,11 +324,26 @@
   }
 
   /* =============== 詳細 =============== */
+  function paintStar(r) {
+    const b = $('#btn-star');
+    b.hidden = !r;
+    if (!r) return;
+    const on = S.isSaved(r.id);
+    b.textContent = on ? '★' : '☆';
+    b.classList.toggle('on', on);
+    b.onclick = () => {
+      const nowOn = S.toggleSave(r);
+      paintStar(r);
+      U.toast(nowOn ? 'コースを保存しました（履歴タブに表示されます）' : '保存を解除しました');
+    };
+  }
+
   function openDetail(r) {
     state.route = r;
     show('detail');
     $('#detail-title').textContent = `${(r.distance / 1000).toFixed(2)}km ${r.modeLabel}`;
-    RN.mapview.showRoute(r);
+    RN.mapview.showRoute(r, 'map');
+    paintStar(r);
 
     const eta = etaSec(r.distance);
     const sheet = $('#detail-sheet');
@@ -272,6 +354,15 @@
         <div><b>${U.hms(eta.sec)}</b><em>予想タイム</em></div>
         <div><b>${U.pace(eta.model.sec)}</b><em>ペース /km</em></div>
       </div>
+      ${r.elev ? `<div class="card" style="padding:10px 12px 4px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <span style="font-size:12px;font-weight:700;color:var(--fg2)">高低差
+            <span class="hill-tag l${r.elev.label.level}">${U.esc(r.elev.label.text)}</span></span>
+          <span style="font-size:11.5px;color:var(--fg3)">獲得標高 ↑${r.elev.gain}m ／ ↓${r.elev.loss}m
+            ・最大勾配 ${r.elev.maxGrade}%</span>
+        </div>
+        <div style="height:52px;margin-top:4px">${RN.terrain.sparkline(r.elev, 320, 52)}</div>
+      </div>` : ''}
       <div class="hint" style="margin:-6px 0 12px">予想タイムの根拠：${U.esc(eta.model.src)}</div>
       <ul class="d-list" id="d-list"></ul>
       <div class="d-actions">
@@ -364,6 +455,10 @@ ${pts}
   }
 
   /* =============== 走る =============== */
+  let pendingPlan = null, pendingCourse = null;
+  let follow = S.settings.get('followMap') !== false;
+  let offCount = 0;
+
   function startRunWithPlan(r) {
     if (RN.tracker.isActive()) { show('run'); return U.toast('すでに記録中です'); }
     pendingPlan = {
@@ -371,19 +466,66 @@ ${pts}
       name: r.stops.filter(s => !s.ghost).map(s => s.name).join(' → ') || r.modeLabel,
       distance: r.distance, mode: r.mode
     };
+    // keep only what the live map needs — the full POI payload is not worth
+    // carrying into localStorage on every autosave
+    pendingCourse = {
+      id: r.id, mode: r.mode, distance: r.distance, path: r.path,
+      origin: r.origin, stops: r.stops.map(s => ({ lat: s.lat, lng: s.lng, name: s.name }))
+    };
     show('run');
-    paintTarget();
     U.toast('「スタート」を押すと記録が始まります');
+    renderRun(RN.tracker.snapshot());
   }
-  let pendingPlan = null;
 
-  function paintTarget() {
+  function activeCourse() {
+    return RN.tracker.course() || pendingCourse;
+  }
+
+  function paintTarget(s) {
     const box = $('#run-target');
-    const snap = RN.tracker.snapshot();
-    const plan = (snap && snap.plan) || pendingPlan;
+    const plan = (s && s.plan) || pendingPlan;
     if (!plan) { box.classList.add('hidden'); return; }
     box.classList.remove('hidden');
-    box.innerHTML = `🎯 <b>${(plan.distance / 1000).toFixed(2)}km</b>　${U.esc(plan.name)}`;
+    let remain = '';
+    const c = activeCourse();
+    if (s && s.pos && c && c.path && c.path.length > 1) {
+      const loc = P.locateOnPath(c.path, s.pos);
+      if (loc) {
+        const left = Math.max(0, c.distance - loc.along);
+        remain = `<span class="remain">残り約 ${(left / 1000).toFixed(2)}km`
+          + `（コース上 ${(loc.along / 1000).toFixed(2)}km 地点）</span>`;
+      }
+    }
+    box.innerHTML = `🎯 <b>${(plan.distance / 1000).toFixed(2)}km</b>　${U.esc(plan.name)}${remain}`;
+  }
+
+  /* live map: the planned course is painted once, the breadcrumb every fix */
+  function paintRunMap(s) {
+    const c = activeCourse();
+    const wrap = $('#run-map-wrap');
+    const showMap = !!(c || (s && s.path && s.path.length));
+    const wasHidden = wrap.hidden;
+    wrap.hidden = !showMap;
+    $('#view-run').classList.toggle('has-map', showMap);
+    if (!showMap) return;
+
+    RN.mapview.ensure('runmap');
+    // only when the container just gained size — this runs on every GPS fix
+    if (wasHidden) RN.mapview.invalidate('runmap');
+    RN.mapview.liveSetRoute(c || null, 'runmap');
+
+    if (s && s.path && s.path.length) {
+      RN.mapview.liveUpdate('runmap', s.path, { follow });
+      // off-route warning, but only after a few consecutive bad fixes so a
+      // single wild GPS reading does not nag mid-run
+      if (c && c.path && c.path.length > 1 && s.pos) {
+        const loc = P.locateOnPath(c.path, s.pos);
+        offCount = (loc && loc.offRoute > 90) ? offCount + 1 : 0;
+        $('#offroute').classList.toggle('hidden', offCount < 3);
+      } else $('#offroute').classList.add('hidden');
+    } else if (c) {
+      $('#offroute').classList.add('hidden');
+    }
   }
 
   function renderRun(s) {
@@ -395,7 +537,7 @@ ${pts}
       $('#run-now').textContent = U.pace(s.paceNow);
       badge.textContent = s.gpsAcc != null ? `GPS ±${Math.round(s.gpsAcc)}m` : 'GPS 取得中';
       badge.className = 'badge ' + (s.gpsAcc != null && s.gpsAcc <= 20 ? 'ok' : s.gpsAcc > 40 ? 'bad' : '');
-      $('#btn-run-start').classList.toggle('hidden', true);
+      $('#btn-run-start').classList.add('hidden');
       $('#btn-run-pause').classList.remove('hidden');
       $('#btn-run-stop').classList.remove('hidden');
       $('#btn-run-pause').textContent = s.paused ? '再開' : '一時停止';
@@ -413,14 +555,26 @@ ${pts}
       $('#btn-run-pause').classList.add('hidden');
       $('#btn-run-stop').classList.add('hidden');
       $('#splits-card').hidden = true;
+      $('#offroute').classList.add('hidden');
     }
-    paintTarget();
+    paintTarget(s);
+    if (!$('#view-run').hidden) paintRunMap(s);
   }
   RN.tracker.on(renderRun);
 
+  $('#btn-follow').onclick = () => {
+    follow = !follow;
+    S.settings.set('followMap', follow);
+    $('#btn-follow').classList.toggle('on', follow);
+    const s = RN.tracker.snapshot();
+    if (follow && s && s.pos) RN.mapview.recenter('runmap', [s.pos.lat, s.pos.lng]);
+    U.toast(follow ? '現在地に追従します' : '地図の追従を解除しました');
+  };
+
   $('#btn-run-start').onclick = async () => {
-    await RN.tracker.start(pendingPlan);
-    pendingPlan = null;
+    await RN.tracker.start(pendingPlan, pendingCourse);
+    pendingPlan = null; pendingCourse = null;
+    offCount = 0;
     U.toast('記録を開始しました。画面はつけたままにしてください');
   };
   $('#btn-run-pause').onclick = () => {
@@ -432,12 +586,41 @@ ${pts}
     const s = RN.tracker.snapshot();
     if (s && s.dist < 50 && !confirm('ほとんど記録されていません。破棄しますか？')) return;
     const saved = RN.tracker.stop();
+    RN.mapview.liveReset('runmap');
+    pendingPlan = null; pendingCourse = null; offCount = 0;
     if (saved) { U.toast(`${(saved.dist / 1000).toFixed(2)}km を保存しました`); show('log'); }
     else { U.toast('記録が短すぎたため保存しませんでした'); renderRun(null); }
   };
 
   /* =============== 履歴 =============== */
+  function renderSaved() {
+    const list = S.saved();
+    $('#saved-block').hidden = !list.length;
+    const box = $('#saved-list');
+    box.innerHTML = '';
+    list.forEach(r => {
+      const names = r.stops.filter(s => !s.ghost).map(s => s.name).join(' → ') || r.modeLabel;
+      const item = U.el('div', 'saved-item');
+      item.innerHTML = `
+        <div class="saved-body">
+          <b>${U.esc(names)}</b>
+          <em>${U.esc(r.modeLabel)}${r.elev ? '・' + U.esc(r.elev.label.text) + ' ↑' + r.elev.gain + 'm' : ''}
+            ・保存 ${U.ymd(r.savedAt)}</em>
+        </div>
+        <div class="saved-km">${(r.distance / 1000).toFixed(2)}km</div>
+        <button class="log-del" title="削除">✕</button>`;
+      item.querySelector('.log-del').onclick = e => {
+        e.stopPropagation();
+        if (!confirm('この保存コースを削除しますか？')) return;
+        S.unsaveCourse(r.id); renderSaved();
+      };
+      item.onclick = () => openDetail(r);
+      box.appendChild(item);
+    });
+  }
+
   function renderLog() {
+    renderSaved();
     const runs = S.runs();
     const pm = S.paceModel(state.km * 1000);
     $('#st-count').textContent = runs.length;
@@ -473,7 +656,8 @@ ${pts}
         state.route = null;
         show('detail');
         $('#detail-title').textContent = U.ymdhm(r.start);
-        RN.mapview.showTrack(r);
+        $('#btn-star').hidden = true;
+        RN.mapview.showTrack(r, 'map');
         const eta = r.movingSec;
         $('#detail-sheet').innerHTML = `
           <div class="sheet-grab"></div>
@@ -518,6 +702,8 @@ ${pts}
     $('#in-pace-sec').value = Math.round(s.paceManual % 60);
     const pm = S.paceModel(state.km * 1000);
     $('#pace-note').textContent = `現在の基準：${U.pace(pm.sec)} /km（${pm.src}）`;
+    $('#install-card').hidden = window.matchMedia('(display-mode: standalone)').matches
+      || navigator.standalone === true;
 
     const hs = RN.health.summary();
     $('#health-status').innerHTML = hs
@@ -606,12 +792,19 @@ ${pts}
     setKm(state.km);
     $$('#seg-mode .seg-btn').forEach(x => x.classList.toggle('is-on', x.dataset.mode === state.mode));
     $$('#cat-chips .chip').forEach(x => x.classList.toggle('is-on', x.dataset.cat === state.cat));
+    $$('#hill-chips .chip').forEach(x => x.classList.toggle('is-on', x.dataset.hills === state.hills));
+    $('#btn-follow').classList.toggle('on', follow);
     renderOriginHistory();
     paintSettings();
+    paintCatHint();
     renderRun(null);
 
     const last = S.origins()[0];
-    if (last) { inOrigin.value = last.label; state.origin = { label: last.label, lat: last.lat, lng: last.lng }; }
+    if (last) {
+      inOrigin.value = last.label;
+      state.origin = { label: last.label, lat: last.lat, lng: last.lng };
+      loadWeather(state.origin);
+    }
 
     const p = RN.tracker.pending();
     if (p && p.dist > 100) {

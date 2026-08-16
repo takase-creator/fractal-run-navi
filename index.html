@@ -14,7 +14,7 @@
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="css/app.css?v=1">
+<link rel="stylesheet" href="css/app.css?v=2">
 </head>
 <body>
 
@@ -31,6 +31,8 @@
     </header>
 
     <div class="scroll">
+      <div class="wx" id="wx" hidden></div>
+
       <div class="card">
         <label class="field-label" for="in-origin">出発地</label>
         <div class="row">
@@ -80,7 +82,17 @@
           <button class="chip chip-sm" data-cat="landmark">名所・神社仏閣</button>
           <button class="chip chip-sm" data-cat="food">カフェ・飲食</button>
         </div>
-        <div class="hint">Googleの<b>クチコミ件数</b>が多い順に優先して経由します。</div>
+        <div class="hint" id="cat-hint">Googleの<b>クチコミ件数</b>が多い順に優先して経由します。</div>
+      </div>
+
+      <div class="card">
+        <label class="field-label">坂の好み</label>
+        <div class="chips" id="hill-chips">
+          <button class="chip chip-sm is-on" data-hills="any">おまかせ</button>
+          <button class="chip chip-sm" data-hills="flat">なるべく平坦に</button>
+          <button class="chip chip-sm" data-hills="hilly">坂を入れる</button>
+        </div>
+        <div class="hint">標高データから各コースの<b>獲得標高</b>を測って並べ替えます。</div>
       </div>
 
       <button class="btn-primary" id="btn-search">
@@ -93,6 +105,7 @@
       </div>
 
       <div id="results"></div>
+      <button class="btn-ghost wide hidden" id="btn-reroll">別のコースを探す</button>
 
       <div class="engine-note" id="engine-note"></div>
     </div>
@@ -103,7 +116,7 @@
     <header class="appbar">
       <button class="icon-btn" id="btn-detail-back" aria-label="戻る">‹</button>
       <div class="appbar-title"><span class="brand2" id="detail-title">コース</span></div>
-      <span class="icon-btn placeholder"></span>
+      <button class="icon-btn" id="btn-star" aria-label="お気に入り" hidden>☆</button>
     </header>
     <div id="map" class="map"></div>
     <div class="detail-sheet" id="detail-sheet"></div>
@@ -113,9 +126,16 @@
   <section class="view" id="view-run" data-view="run" hidden>
     <header class="appbar">
       <div class="appbar-title"><span class="brand2">走る</span></div>
+      <button class="icon-btn" id="btn-follow" aria-label="現在地に追従" title="現在地に追従">◎</button>
       <span class="badge" id="gps-badge">GPS —</span>
     </header>
-    <div class="scroll">
+
+    <div class="run-map-wrap" id="run-map-wrap" hidden>
+      <div id="runmap" class="map"></div>
+      <div class="offroute hidden" id="offroute">⚠︎ コースから外れています</div>
+    </div>
+
+    <div class="scroll" id="run-scroll">
       <div class="run-target hidden" id="run-target"></div>
 
       <div class="run-hero">
@@ -160,6 +180,13 @@
         </div>
         <div class="hint" id="st-pace-src"></div>
       </div>
+
+      <div id="saved-block" hidden>
+        <label class="field-label" style="margin:2px 2px 8px">⭐ 保存したコース</label>
+        <div id="saved-list"></div>
+      </div>
+
+      <label class="field-label" style="margin:14px 2px 8px">走った記録</label>
       <div id="log-list"></div>
     </div>
   </section>
@@ -241,8 +268,18 @@
         <div class="hint">出発地履歴・走行記録・ペース設定・APIキーがこの端末から消えます。</div>
       </div>
 
+      <div class="card" id="install-card">
+        <label class="field-label">ホーム画面に追加</label>
+        <p class="hint hint-block">アプリのように全画面で起動し、地図の表示も速くなります。</p>
+        <ol class="steps">
+          <li>Safariの下部にある <b>共有ボタン（□に↑）</b> をタップ</li>
+          <li>メニューを下にスクロールして <b>「ホーム画面に追加」</b></li>
+          <li>右上の <b>「追加」</b></li>
+        </ol>
+      </div>
+
       <div class="foot">
-        <div>FRACTAL RUN NAVI <span id="app-version">v1.0.0</span></div>
+        <div>FRACTAL RUN NAVI <span id="app-version">v1.1.0</span></div>
         <div class="foot-src" id="foot-src"></div>
       </div>
     </div>
@@ -261,13 +298,15 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="js/util.js?v=1"></script>
-<script src="js/store.js?v=1"></script>
-<script src="js/providers.js?v=1"></script>
-<script src="js/planner.js?v=1"></script>
-<script src="js/mapview.js?v=1"></script>
-<script src="js/tracker.js?v=1"></script>
-<script src="js/health.js?v=1"></script>
-<script src="js/app.js?v=1"></script>
+<script src="js/util.js?v=2"></script>
+<script src="js/store.js?v=2"></script>
+<script src="js/providers.js?v=2"></script>
+<script src="js/terrain.js?v=2"></script>
+<script src="js/weather.js?v=2"></script>
+<script src="js/planner.js?v=2"></script>
+<script src="js/mapview.js?v=2"></script>
+<script src="js/tracker.js?v=2"></script>
+<script src="js/health.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

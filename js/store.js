@@ -13,10 +13,13 @@ RN.store = (function () {
       paceManual: 360,         // sec/km
       lastKm: 5,
       lastMode: 'loop',        // 'loop' | 'out_back' | 'one_way'
-      lastCat: 'any'
+      lastCat: 'any',
+      hills: 'any',            // 'any' | 'flat' | 'hilly'
+      followMap: true          // keep the live map centred on the runner
     },
     origins: [],               // [{label, lat, lng, at}]
     runs: [],                  // [{id, start, end, movingSec, dist, path:[[lat,lng,t]], splits:[], plan}]
+    saved: [],                 // starred courses, full route objects
     health: null,              // {importedAt, count, workouts:[{start,dist,sec}]}
     poiCache: {}               // key -> {at, items}
   };
@@ -68,6 +71,24 @@ RN.store = (function () {
     return r;
   }
   function deleteRun(id) { write('runs', runs().filter(r => r.id !== id)); }
+
+  /* ---------- saved (starred) courses ----------
+     The full route is kept, polyline included, so a saved course opens and
+     navigates with no network at all — the point of saving one is to have it
+     when you are already outside.                                          */
+  function saved() { return read('saved'); }
+  function isSaved(id) { return saved().some(r => r.id === id); }
+  function saveCourse(route) {
+    const list = saved().filter(r => r.id !== route.id);
+    list.unshift(Object.assign({}, route, { savedAt: Date.now() }));
+    write('saved', list.slice(0, 60));
+    return true;
+  }
+  function unsaveCourse(id) { write('saved', saved().filter(r => r.id !== id)); }
+  function toggleSave(route) {
+    if (isSaved(route.id)) { unsaveCourse(route.id); return false; }
+    saveCourse(route); return true;
+  }
 
   /* ---------- apple health ---------- */
   function health() { return read('health'); }
@@ -133,6 +154,7 @@ RN.store = (function () {
 
   return {
     settings, origins, addOrigin, runs, addRun, deleteRun,
+    saved, isSaved, saveCourse, unsaveCourse, toggleSave,
     health, setHealth, cacheGet, cacheSet, paceModel, wipe
   };
 })();

@@ -26,8 +26,9 @@ RN.tracker = (function () {
   function emit() { listeners.forEach(f => { try { f(snapshot()); } catch (e) { } }); }
   function on(fn) { listeners.push(fn); return () => { listeners = listeners.filter(f => f !== fn); }; }
 
-  function blank(plan) {
+  function blank(plan, course) {
     return {
+      course: course || null,   // the planned route, kept for the live map
       id: 'run-' + Date.now().toString(36),
       start: Date.now(),
       end: null,
@@ -141,8 +142,8 @@ RN.tracker = (function () {
 
   /* ---------- public ---------- */
 
-  async function start(plan) {
-    st = blank(plan);
+  async function start(plan, course) {
+    st = blank(plan, course);
     st.pausedSec = 0;
     startWatch();
     await lockScreen();
@@ -212,13 +213,20 @@ RN.tracker = (function () {
   function snapshot() {
     if (!st) return null;
     const paceAvg = st.dist > 30 ? st.movingSec / (st.dist / 1000) : 0;
+    const last = st.path[st.path.length - 1];
     return {
       active: true, paused: st.paused,
       dist: st.dist, elapsedSec: st.elapsedSec, movingSec: st.movingSec,
       paceAvg, paceNow: st.recentSpeed > MOVING_MIN ? 1000 / st.recentSpeed : 0,
-      splits: st.splits, gpsAcc: st.gpsAcc, plan: st.plan, points: st.path.length
+      splits: st.splits, gpsAcc: st.gpsAcc, plan: st.plan,
+      points: st.path.length, path: st.path,
+      pos: last ? { lat: last[0], lng: last[1] } : null
     };
   }
+
+  /** the course being followed, if the run was started from a planned route */
+  function course() { return st && st.course ? st.course : null; }
+  function setCourse(route) { if (st) st.course = route; }
 
   const isActive = () => !!st;
 
@@ -254,6 +262,6 @@ ${pts}
 
   return {
     start, resumeFrom, pause, resume, stop, discard,
-    snapshot, isActive, on, pending, toGPX, toCSV
+    snapshot, isActive, on, pending, toGPX, toCSV, course, setCourse
   };
 })();

@@ -138,8 +138,24 @@ RN.planner = (function () {
     const popMax = real.length ? Math.max(...real.map(s => s.pop)) : 0;
     const coverage = r.stops.length ? real.length / r.stops.length : 0;
     r.err = err;
-    r.score = 46 * fit + 0.34 * popAvg + 0.14 * popMax + 8 * coverage;
+    r.baseScore = 46 * fit + 0.34 * popAvg + 0.14 * popMax + 8 * coverage;
+    r.score = r.baseScore;
     return r;
+  }
+
+  /** re-rank once elevation is known. Always recomputes from `baseScore` so
+      switching back to おまかせ restores the neutral order. */
+  function applyHillPreference(routes, pref, target) {
+    for (const r of routes) {
+      if (r.baseScore == null) r.baseScore = r.score;
+      if (!pref || pref === 'any' || !r.elev) { r.score = r.baseScore; continue; }
+      const perKm = r.elev.gain / Math.max(0.2, r.distance / 1000);
+      // 25 m/km of climbing is a properly hilly city route; scale against that
+      const hilliness = Math.min(1, perKm / 25);
+      r.score = r.baseScore + (pref === 'flat' ? -26 * hilliness : 22 * hilliness);
+    }
+    routes.sort((a, b) => b.score - a.score);
+    return routes;
   }
 
   /* ---------- main ---------- */
@@ -147,12 +163,17 @@ RN.planner = (function () {
   /**
    * @param {object} o
    *   provider, origin {lat,lng,label}, targetMeters, mode, category,
-   *   onProgress(frac, text), signal (AbortSignal-ish {aborted})
+   *   hills ('any'|'flat'|'hilly'), exclude (Set of stop ids to avoid),
+   *   onProgress(frac, text), onPartial(routes) — fired as soon as the first
+   *   real route exists so the UI need not wait for the whole search,
+   *   signal (AbortSignal-ish {aborted})
    * @returns {Promise<Array>} up to 3 routes, best first
    */
   async function plan(o) {
     const { provider, origin, targetMeters: T, mode, category } = o;
     const prog = o.onProgress || function () { };
+    const partial = o.onPartial || function () { };
+    const exclude = o.exclude instanceof Set ? o.exclude : new Set();
     const stop = () => { if (o.signal && o.signal.aborted) throw new Error('ABORT'); };
 
     let detour = DETOUR_DEFAULT;
@@ -190,6 +211,9 @@ RN.planner = (function () {
       console.warn('searchRing', e);
     }
     stop();
+    // "もう一度探す" pushes the previous picks to the back rather than banning
+    // them, so a thin area still returns something instead of nothing
+    if (exclude.size) pois = pois.map(p => exclude.has(p.id) ? Object.assign({}, p, { pop: p.pop * 0.25 }) : p);
     prog(0.42, `${pois.length}件の候補からコースを組み立てています…`);
 
     /* --- 3. cheap candidate generation --- */
@@ -264,6 +288,8 @@ RN.planner = (function () {
         routed.push(scoreRoute(Object.assign({}, c, {
           distance: r.distance, path: r.path, osrmDuration: r.duration
         }), T));
+        // hand the UI something to show while the rest are still routing
+        partial(decorate(routed.slice().sort((a, b) => b.score - a.score), origin, T, category));
       } catch (e) {
         if (String(e.message) === 'ABORT') throw e;
         lastErr = e;
@@ -308,21 +334,39 @@ RN.planner = (function () {
       }
     }
 
-    /* --- 6. finish --- */
-    prog(1, '完了');
+    /* --- 6. measure the hills, then finish --- */
     routed.sort((a, b) => b.score - a.score);
+    let final = dedupeRoutes(routed, 3);
 
-    // drop near-duplicate routes (same headline stop)
-    const final = [];
+    if (RN.terrain) {
+      prog(0.96, '高低差を調べています…');
+      try {
+        await RN.terrain.annotate(final);
+        applyHillPreference(final, o.hills, T);
+      } catch (e) { console.warn('terrain', e && e.message); }
+    }
+    stop();
+    prog(1, '完了');
+    return decorate(final, origin, T, category);
+  }
+
+  function dedupeRoutes(routed, max) {
+    const out = [];
     for (const r of routed) {
       const head = (r.stops.find(s => !s.ghost) || r.stops[0]).id;
-      if (final.some(f => (f.stops.find(s => !s.ghost) || f.stops[0]).id === head)) continue;
-      final.push(r);
-      if (final.length >= 3) break;
+      if (out.some(f => (f.stops.find(s => !s.ghost) || f.stops[0]).id === head)) continue;
+      out.push(r);
+      if (out.length >= max) break;
     }
+    return out;
+  }
 
-    return final.map((r, i) => Object.assign(r, {
-      id: 'route-' + Date.now().toString(36) + '-' + i,
+  /** stamp the display fields a route needs once it leaves the planner */
+  function decorate(routes, origin, T, category) {
+    const list = dedupeRoutes(routes, 3);
+    return list.map((r, i) => Object.assign(r, {
+      id: r.id || ('route-' + Math.abs(Math.round(r.distance)) + '-' +
+        (r.stops[0] ? r.stops[0].id.replace(/[^a-z0-9]/gi, '') : i)),
       rank: i + 1,
       target: T,
       origin: { lat: origin.lat, lng: origin.lng, label: origin.label },
@@ -363,5 +407,18 @@ RN.planner = (function () {
     return 'https://www.google.com/maps/dir/?' + q.toString();
   }
 
-  return { plan, mapsUrl, MODE_LABEL };
+  /** how far along `path` is `pt`, and how far off it — for live run guidance */
+  function locateOnPath(path, pt) {
+    if (!path || path.length < 2) return null;
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < path.length; i++) {
+      const d = U.haversine(path[i], pt);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    let done = 0;
+    for (let i = 1; i <= best; i++) done += U.haversine(path[i - 1], path[i]);
+    return { index: best, along: done, offRoute: bestD };
+  }
+
+  return { plan, mapsUrl, MODE_LABEL, locateOnPath, applyHillPreference };
 })();

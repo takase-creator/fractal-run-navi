@@ -206,10 +206,59 @@ body{
 .d-km{font-size:12px;color:var(--fg2);font-variant-numeric:tabular-nums;align-self:center}
 .d-actions{display:flex;flex-direction:column;gap:8px}
 
+/* ---------- weather ---------- */
+.wx{display:flex;align-items:center;gap:11px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r);padding:11px 13px;margin-bottom:12px}
+.wx-ico{font-size:26px;line-height:1}
+.wx-body{flex:1;min-width:0}
+.wx-main{font-size:14px;font-weight:700}
+.wx-main small{font-weight:500;color:var(--fg2);font-size:12px;margin-left:6px}
+.wx-sub{font-size:11.5px;color:var(--fg3);margin-top:1px}
+.wx.lv1{border-color:#5a4a1c}.wx.lv1 .wx-sub{color:var(--warn)}
+.wx.lv2{border-color:#6b3a1c}.wx.lv2 .wx-sub{color:#ff9a4d}
+.wx.lv3{border-color:#6b2230;background:rgba(255,84,112,.08)}.wx.lv3 .wx-sub{color:var(--danger)}
+
+/* ---------- elevation ---------- */
+.elev{display:flex;align-items:center;gap:10px;padding:8px 14px 11px;border-top:1px solid var(--line)}
+.elev-svg{display:block;width:100%;height:100%}
+.elev-chart{flex:1;height:40px;min-width:0}
+.elev-num{flex:0 0 auto;text-align:right}
+.elev-num b{display:block;font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)}
+.elev-num em{display:block;font-style:normal;font-size:10px;color:var(--fg3)}
+.hill-tag{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:7px;
+  background:var(--card2);color:var(--fg2);margin-left:6px;vertical-align:1px}
+.hill-tag.l0{color:var(--accent);background:rgba(0,229,160,.13)}
+.hill-tag.l2{color:var(--warn);background:rgba(255,176,32,.13)}
+.hill-tag.l3{color:var(--danger);background:rgba(255,84,112,.13)}
+
+/* ---------- saved courses ---------- */
+.saved-item{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:12px 14px;margin-bottom:9px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.saved-item:active{border-color:var(--accent)}
+.saved-body{flex:1;min-width:0}
+.saved-body b{display:block;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.saved-body em{font-style:normal;font-size:11px;color:var(--fg3)}
+.saved-km{font-size:16px;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
+.icon-btn.on{color:var(--warn);border-color:#5a4a1c;background:rgba(255,176,32,.12)}
+
 /* ---------- run ---------- */
+.run-map-wrap{position:relative;flex:0 0 40vh;min-height:200px;border-bottom:1px solid var(--line)}
+.run-map-wrap .map{position:absolute;inset:0;height:100%}
+.offroute{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:500;
+  background:rgba(255,84,112,.94);color:#fff;font-size:12px;font-weight:700;
+  padding:7px 13px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.5);white-space:nowrap}
 .run-target{background:rgba(0,229,160,.1);border:1px solid #1c5a49;border-radius:12px;
   padding:10px 13px;margin-bottom:12px;font-size:13px;color:var(--accent)}
+.run-target .remain{display:block;margin-top:4px;font-size:11.5px;color:var(--fg2)}
 .run-hero{text-align:center;padding:22px 0 18px}
+/* the map takes 40vh, so the numbers give way rather than pushing controls off-screen */
+#view-run.has-map .run-hero{padding:10px 0 6px}
+#view-run.has-map .run-dist{font-size:46px}
+#view-run.has-map .run-dist small{font-size:16px}
+#view-run.has-map .run-sub{margin-top:10px}
+#view-run.has-map .run-sub span{font-size:18px}
+#view-run.has-map .run-controls{margin:12px 0 10px}
+#view-run.has-map .btn-run{padding:15px;font-size:16px}
 .run-dist{font-size:68px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;
   letter-spacing:-.02em;
   background:linear-gradient(180deg,#fff,#9fe8d3);-webkit-background-clip:text;background-clip:text;color:transparent}

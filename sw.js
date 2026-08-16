@@ -1,11 +1,12 @@
 /* FRACTAL RUN NAVI :: service worker
    Network-first for app files so a deploy is picked up immediately,
    cache-first for icons. Map tiles and every API call bypass the worker. */
-const VERSION = 'runnavi-v1';
+const VERSION = 'runnavi-v2';
 const SHELL = [
   './', './index.html', './css/app.css',
-  './js/util.js', './js/store.js', './js/providers.js', './js/planner.js',
-  './js/mapview.js', './js/tracker.js', './js/health.js', './js/app.js',
+  './js/util.js', './js/store.js', './js/providers.js', './js/terrain.js',
+  './js/weather.js', './js/planner.js', './js/mapview.js', './js/tracker.js',
+  './js/health.js', './js/app.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'
 ];
 
