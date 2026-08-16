@@ -144,9 +144,17 @@ RN.planner = (function () {
     const V = mode === 'loop' ? (T < 4000 ? 3 : 4) : 0;
     let ringMid, ringIn, ringOut;
     if (mode === 'loop') {
-      ringMid = T / (detour * V * 2 * Math.sin(Math.PI / V));           // = Rc
-      // vertices sit between ~Rc and ~2*Rc*sin(pi/V) from the origin
-      ringIn = ringMid * 0.62; ringOut = ringMid * 1.95;
+      const Rc = T / (detour * V * 2 * Math.sin(Math.PI / V));
+      // vertex i of the polygon sits 2*Rc*sin(i*pi/V) from the origin, so the
+      // stops live in a band, not on a circle. Searching the true band keeps the
+      // Overpass query small — a wrong band is both slower and worse.
+      const dMin = 2 * Rc * Math.sin(Math.PI / V);
+      const dMax = 2 * Rc * Math.sin(Math.PI * Math.floor(V / 2) / V);
+      // room for the refinement pass; short loops need a wider net because the
+      // band is only a few hundred metres thick and would otherwise be empty
+      const slack = Rc > 1500 ? [0.88, 1.14] : Rc > 500 ? [0.80, 1.26] : [0.55, 1.70];
+      ringMid = Rc;
+      ringIn = dMin * slack[0]; ringOut = dMax * slack[1];
     } else {
       const leg = mode === 'out_back' ? T / 2 : T;
       ringMid = leg / detour;
@@ -221,6 +229,7 @@ RN.planner = (function () {
     /* --- 4. route the survivors for real --- */
     const routed = [];
     const total = cands.length;
+    let lastErr = null;
     for (let i = 0; i < cands.length; i++) {
       stop();
       prog(0.45 + 0.35 * (i / total), `ルートを計算中 ${i + 1}/${total}…`);
@@ -240,11 +249,16 @@ RN.planner = (function () {
         }), T));
       } catch (e) {
         if (String(e.message) === 'ABORT') throw e;
+        lastErr = e;
         console.warn('route failed', e && e.message);
       }
     }
     stop();
-    if (!routed.length) throw new Error('ルートを引けませんでした。出発地を少し変えて試してください。');
+    if (!routed.length) {
+      throw new Error(pois.length === 0 && lastErr
+        ? '地図サーバーが混雑しています。1〜2分おいてもう一度お試しください。'
+        : 'ルートを引けませんでした。出発地や距離を少し変えて試してください。');
+    }
 
     /* --- 5. one refinement pass on the best few --- */
     routed.sort((a, b) => b.score - a.score);

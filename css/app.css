@@ -284,7 +284,9 @@ body{
 
 /* ---------- leaflet dark ---------- */
 .leaflet-container{background:#0f1620}
-.leaflet-control-attribution{background:rgba(11,15,20,.75) !important;color:#7d8fa3 !important;font-size:9px !important}
+/* keep the required OSM/CARTO credit clear of the detail sheet that overlaps the map */
+.leaflet-control-attribution{background:rgba(11,15,20,.75) !important;color:#7d8fa3 !important;
+  font-size:9px !important;margin-bottom:24px !important}
 .leaflet-control-attribution a{color:#93a4b8 !important}
 .leaflet-bar a{background:#1d2836 !important;color:#eaf0f7 !important;border-color:#263242 !important}
 .pin{

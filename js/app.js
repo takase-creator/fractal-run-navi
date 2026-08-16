@@ -152,7 +152,11 @@
   function progress(frac, text) {
     $('#search-progress').classList.remove('hidden');
     $('#progress-fill').style.width = Math.round(frac * 100) + '%';
-    if (text) $('#progress-text').textContent = text;
+    if (text) {
+      // the open-data servers are shared and rate-limited, so set the expectation
+      const slow = engineId() === 'osm' ? '（オープンデータの共有サーバー利用のため20〜40秒かかります）' : '';
+      $('#progress-text').innerHTML = U.esc(text) + (slow ? `<br><span style="opacity:.6">${slow}</span>` : '');
+    }
   }
 
   btnSearch.onclick = async () => {
@@ -212,15 +216,17 @@
     routes.forEach(r => {
       const eta = etaSec(r.distance);
       const real = r.stops.filter(s => !s.ghost);
-      const head = real[0] || r.stops[0];
       const errPct = Math.round(r.err * 100);
+      const title = real.length
+        ? U.esc(real[0].name) + (real.length > 1 ? ` ほか${real.length - 1}ヶ所` : '')
+        : `${U.esc(r.modeLabel)}コース（周辺に目立つスポットなし）`;
 
       const card = U.el('div', 'res');
       card.innerHTML = `
         <div class="res-top">
           <div class="res-rank">${r.rank}</div>
           <div class="res-head">
-            <div class="res-name">${U.esc(head ? head.name : 'コース')}${real.length > 1 ? ` ほか${real.length - 1}ヶ所` : ''}</div>
+            <div class="res-name">${title}</div>
             <div class="res-meta">${U.esc(r.modeLabel)}・目標${(r.target / 1000).toFixed(1)}kmとの差 ${errPct <= 2 ? 'ほぼぴったり' : (r.distance > r.target ? '+' : '−') + Math.abs(r.distance - r.target).toFixed(0) + 'm'}</div>
           </div>
         </div>
@@ -271,11 +277,30 @@
         <button class="btn-ghost wide" id="btn-share">コースを共有 / GPX保存</button>
       </div>`;
 
+    /* Distance to each stop is measured along the real polyline, not by adding
+       up straight lines: for a loop the return leg would otherwise read as a
+       decreasing distance. */
+    const cum = [0];
+    for (let i = 1; i < (r.path || []).length; i++) cum[i] = cum[i - 1] + U.haversine(r.path[i - 1], r.path[i]);
+    let searchFrom = 0;
+    function alongPath(pt) {
+      if (!r.path || r.path.length < 2) return null;
+      let best = searchFrom, bestD = Infinity;
+      for (let i = searchFrom; i < r.path.length; i++) {
+        const d = U.haversine(r.path[i], pt);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      searchFrom = best;                  // stops are visited in order
+      return cum[best];
+    }
+
     const list = $('#d-list');
     const seq = [{ name: r.origin.label || 'スタート', icon: '🚩', sub: '出発地', d: 0 }];
     let acc = 0, prev = { lat: r.origin.lat, lng: r.origin.lng };
     r.stops.forEach(s => {
-      acc += U.haversine(prev, s); prev = s;
+      const along = alongPath(s);
+      acc = along != null ? along : acc + U.haversine(prev, s);
+      prev = s;
       const badge = PV.popLabel(s);
       seq.push({
         name: s.name, icon: PV.iconFor(s), poi: s,
@@ -287,15 +312,15 @@
       });
     });
     if (r.mode !== 'one_way') {
-      acc += U.haversine(prev, r.origin);
-      seq.push({ name: r.origin.label || 'ゴール', icon: '🏁', sub: '出発地に戻る', d: acc });
+      seq.push({ name: r.origin.label || 'ゴール', icon: '🏁', sub: '出発地に戻る', d: r.distance });
+    } else if (seq.length) {
+      seq[seq.length - 1].d = r.distance;
     }
-    const scale = r.distance / Math.max(1, acc);
     seq.forEach((x, i) => {
       const li = U.el('li');
       li.innerHTML = `<div class="d-ico">${x.icon}</div>
         <div class="d-body"><div class="d-name">${U.esc(x.name)}</div><div class="d-sub">${x.sub}</div></div>
-        <div class="d-km">${i === 0 ? '' : (x.d * scale / 1000).toFixed(1) + 'km'}</div>`;
+        <div class="d-km">${i === 0 ? '' : (x.d / 1000).toFixed(1) + 'km'}</div>`;
       if (x.poi && x.poi.url) {
         li.style.cursor = 'pointer';
         li.onclick = () => window.open(x.poi.url, '_blank', 'noopener');

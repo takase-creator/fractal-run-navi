@@ -82,18 +82,31 @@ RN.util = (function () {
   /* ---------- async helpers ---------- */
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  /** serialised queue that guarantees >= gapMs between calls (API politeness) */
+  /**
+   * Serialised queue guaranteeing >= gapMs between calls (API politeness).
+   * The queue tail must never be left in a rejected state: `p.then(fn)` on a
+   * rejected promise skips fn and re-throws, so one failed request would
+   * otherwise poison every later call through the same limiter.
+   */
   function rateLimiter(gapMs) {
     let last = 0, chain = Promise.resolve();
+    const gap = typeof gapMs === 'function' ? gapMs : () => gapMs;
     return fn => {
-      chain = chain.then(async () => {
-        const wait = gapMs - (performance.now() - last);
+      const run = chain.then(async () => {
+        const wait = gap() - (performance.now() - last);
         if (wait > 0) await sleep(wait);
         last = performance.now();
         return fn();
       });
-      return chain;
+      chain = run.then(() => { }, () => { });
+      return run;
     };
+  }
+
+  /** HTTP status carried on the error so callers can distinguish 429 from 404 */
+  function httpStatus(err) {
+    const m = /HTTP (\d{3})/.exec(String(err && err.message));
+    return m ? +m[1] : 0;
   }
 
   async function fetchJSON(url, opt) {
@@ -143,7 +156,7 @@ RN.util = (function () {
   return {
     haversine, destPoint, bearing, bbox, pathLength,
     hms, pace, km, km1, nfmt, ymd, ymdhm, pad2,
-    sleep, rateLimiter, fetchJSON,
+    sleep, rateLimiter, fetchJSON, httpStatus,
     $, $$, el, esc, toast, download
   };
 })();

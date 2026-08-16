@@ -63,7 +63,36 @@ RN.providers = (function () {
   /* ===============================================================
      OSM / open-data provider
      =============================================================== */
-  const osmLimit = U.rateLimiter(1100);   // be a good citizen on shared servers
+  /* The OSM stack runs on donated infrastructure. Space requests out, and back
+     right off when a server says 429 / 5xx — the throttle decays again once
+     things recover so a single hiccup does not slow the app down for good. */
+  let osmGap = 1100, osmPenaltyUntil = 0;
+  const osmLimit = U.rateLimiter(() => Date.now() < osmPenaltyUntil ? osmGap : 1100);
+
+  function noteOsmError(err) {
+    const s = U.httpStatus(err);
+    if (s === 429 || s === 504 || s === 503) {
+      osmGap = Math.min(6000, Math.max(2200, osmGap * 1.6));
+      osmPenaltyUntil = Date.now() + 90000;
+      return true;
+    }
+    return false;
+  }
+
+  /** run `fn` through the limiter, retrying once or twice on server pushback */
+  async function osmTry(fn, attempts) {
+    attempts = attempts || 3;
+    let err;
+    for (let i = 0; i < attempts; i++) {
+      try { return await osmLimit(fn); }
+      catch (e) {
+        err = e;
+        if (!noteOsmError(e) || i === attempts - 1) throw e;
+        await U.sleep(1200 * Math.pow(2, i));
+      }
+    }
+    throw err;
+  }
 
   const OSM_KINDS = {
     park: { s: 58, icon: '🌳', label: '公園' },
@@ -118,11 +147,15 @@ RN.providers = (function () {
     '遊園地|タワー|展望台|展望公園|大橋$|橋$|運河|湖$|池$|沼$|海岸|ビーチ|浜$|' +
     '山$|岳$|峠$|滝$|渓谷|球場|競技場|スタジアム|アリーナ|ドーム$|門$|坂$|' +
     '史跡|古墳|灯台|埠頭|ふ頭|遊歩道|並木|堤$|土手|川$|渓流|温泉|神域|参道)');
+  /* Administrative bodies and companies. OSM tags 神社本庁 (the Shinto
+     head office) as amenity=place_of_worship, and Wikipedia geotags every
+     corporate HQ — neither is somewhere you would run to. */
+  const ORG_RE = new RegExp('(本庁|本部$|事務局|事務所|教団|連合会|協同組合|出張所|' +
+    '株式会社|有限会社|ホールディングス|\\(企業\\)|（企業）|PR会社)');
   const WIKI_JUNK_RE = new RegExp(
-    '(株式会社|有限会社|ホールディングス|\\(企業\\)|（企業）|出版|放送|新聞|テレビ|' +
-    '証券|銀行|保険|病院|クリニック|医院|大学$|高等学校|中学校|小学校|専門学校|' +
-    '駅$|駅 |パーキングエリア|インターチェンジ|マンション|ホテル|事務所|' +
-    '組合$|連合会|協同組合|PR会社|レコード|レーベル)');
+    '(出版|放送|新聞|テレビ|証券|銀行|保険|病院|クリニック|医院|' +
+    '大学$|高等学校|中学校|小学校|専門学校|駅$|駅 |パーキングエリア|' +
+    'インターチェンジ|マンション|ホテル|レコード|レーベル|支店$|営業所)');
 
   /* Trailing type token. "参宮橋" (the bridge) and "参宮橋公園" (a 0.5 ha pocket
      park) are different places, so a name may only absorb another article's
@@ -171,7 +204,7 @@ RN.providers = (function () {
     async geocode(q) {
       const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5' +
         '&accept-language=ja&addressdetails=1&q=' + encodeURIComponent(q);
-      const r = await osmLimit(() => U.fetchJSON(url));
+      const r = await osmTry(() => U.fetchJSON(url), 2);
       return (r || []).map(x => ({
         label: (x.name && x.name.length > 1 ? x.name : x.display_name.split(',')[0]),
         detail: x.display_name,
@@ -182,7 +215,7 @@ RN.providers = (function () {
     async reverse(p) {
       const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=ja&lat=${p.lat}&lon=${p.lng}`;
       try {
-        const r = await osmLimit(() => U.fetchJSON(url));
+        const r = await osmTry(() => U.fetchJSON(url), 2);
         const a = r.address || {};
         return r.name || [a.neighbourhood, a.suburb, a.city || a.town || a.village]
           .filter(Boolean).join(' ') || '現在地';
@@ -196,24 +229,49 @@ RN.providers = (function () {
       ring.push(ring[0]);
       const coords = ring.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join(',');
       const around = `(around:${Math.round(tol)},${coords})`;
-      const sel = (OSM_TAGS[category] || OSM_TAGS.any)
-        .map(f => `nwr${around}${f};`).join('');
+
+      /* A 10 km one-way search sweeps a ~150 km² band; asking the shared
+         Overpass instance for every named park in that band reliably 504s.
+         Past ~3.5 km the query is restricted to features that carry a Wikidata
+         id (i.e. notable ones) plus green space mapped as an area — which is
+         exactly what scores well anyway, so nothing useful is lost. */
+      const big = rMid > 3500;
+      const base = (OSM_TAGS[category] || OSM_TAGS.any);
+      let sel;
+      if (big) {
+        sel = base.map(f => `nwr${around}${f.includes('[wikidata]') ? f : f + '[wikidata]'};`).join('');
+        if (category !== 'food') {
+          // green space mapped as an area — the footprint alone makes it worth reaching
+          const g = '[leisure~"^(park|nature_reserve|garden)$"][name]';
+          sel += `way${around}${g};relation${around}${g};`;
+        }
+      } else {
+        sel = base.map(f => `nwr${around}${f};`).join('');
+      }
       // `out bb` gives bounds for ways/relations (nodes keep lat/lon). The
       // footprint is the strongest free signal for "is this place a big deal":
       // 代々木公園 is ~1.1 km², a neighbourhood pocket park is ~2,000 m².
-      const q = `[out:json][timeout:50];(${sel});out tags bb 400;`;
+      const q = `[out:json][timeout:45];(${sel});out tags bb 400;`;
 
-      const data = await osmLimit(() => U.fetchJSON(
-        'https://overpass-api.de/api/interpreter',
-        { method: 'POST', body: 'data=' + encodeURIComponent(q), timeout: 55000,
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }));
+      // The main instance is frequently saturated and a timeout there yields an
+      // empty POI set, which silently degrades every route. Fall back to a mirror.
+      const post = host => U.fetchJSON(host, {
+        method: 'POST', body: 'data=' + encodeURIComponent(q), timeout: 50000,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      let data;
+      try {
+        data = await osmTry(() => post('https://overpass-api.de/api/interpreter'), 2);
+      } catch (e) {
+        console.warn('overpass primary failed, trying mirror:', e && e.message);
+        data = await osmTry(() => post('https://overpass.kumi.systems/api/interpreter'), 2);
+      }
 
       return (data.elements || []).map(e => {
         const t = e.tags || {};
         const nm = t['name:ja'] || t.name;
         if (!nm) return null;
-        // OSM tags administrative bodies as place_of_worship too (神社本庁 etc.)
-        if (/(本庁|本部$|事務局|事務所|教団|連合会|協同組合|出張所)/.test(nm)) return null;
+        if (ORG_RE.test(nm)) return null;
 
         let lat, lng, area = 0;
         if (e.bounds) {
@@ -274,7 +332,8 @@ RN.providers = (function () {
               pop: logScale(views, 30000),
               reviews: null, rating: null, kind: 'wiki',
               views,
-              standalone: PLACE_RE.test(p.title) && !WIKI_JUNK_RE.test(p.title),
+              standalone: PLACE_RE.test(p.title)
+                && !WIKI_JUNK_RE.test(p.title) && !ORG_RE.test(p.title),
               url: 'https://ja.wikipedia.org/?curid=' + p.pageid
             });
           }
@@ -334,7 +393,7 @@ RN.providers = (function () {
       const coords = points.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
       const url = `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coords}` +
         '?overview=full&geometries=geojson&continue_straight=false&annotations=false';
-      const r = await osmLimit(() => U.fetchJSON(url, { timeout: 25000 }));
+      const r = await osmTry(() => U.fetchJSON(url, { timeout: 25000 }), 3);
       if (r.code !== 'Ok' || !r.routes || !r.routes.length) throw new Error('route failed');
       const rt = r.routes[0];
       return {
@@ -457,9 +516,10 @@ RN.providers = (function () {
           fields,
           locationRestriction: { center: new google.maps.LatLng(s.lat, s.lng), radius: Math.min(45000, rc) },
           maxResultCount: 20,
-          rankPreference: places.SearchNearbyRankPreference.POPULARITY,
           language: 'ja', region: 'jp'
         };
+        const rank = places.SearchNearbyRankPreference;
+        if (rank && rank.POPULARITY) req.rankPreference = rank.POPULARITY;
         if (types) req.includedPrimaryTypes = types;
         try {
           const { places: found } = await places.Place.searchNearby(req);
