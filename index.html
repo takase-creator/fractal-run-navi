@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="住所と距離を入れるだけ。人気スポットを巡るランニングコースを自動生成します。">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RUN NAVI">
+<title>FRACTAL RUN NAVI</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="css/app.css?v=1">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============================= ルート探索 ============================= -->
+  <section class="view" id="view-route" data-view="route">
+    <header class="appbar">
+      <div class="appbar-title">
+        <span class="brand">FRACTAL</span>
+        <span class="brand2">RUN NAVI</span>
+      </div>
+      <button class="icon-btn" id="btn-go-settings" aria-label="設定">⚙︎</button>
+    </header>
+
+    <div class="scroll">
+      <div class="card">
+        <label class="field-label" for="in-origin">出発地</label>
+        <div class="row">
+          <input id="in-origin" class="input" type="text" inputmode="text"
+                 placeholder="例: 原宿駅 / 渋谷区神宮前1-1" autocomplete="off" enterkeyhint="search">
+          <button class="btn-ghost" id="btn-locate" title="現在地を使う">📍</button>
+        </div>
+        <div class="chips" id="origin-history"></div>
+        <div class="hint" id="origin-status"></div>
+      </div>
+
+      <div class="card">
+        <label class="field-label">走る距離</label>
+        <div class="chips chips-dist" id="dist-chips">
+          <button class="chip" data-km="1">1<small>km</small></button>
+          <button class="chip" data-km="3">3<small>km</small></button>
+          <button class="chip is-on" data-km="5">5<small>km</small></button>
+          <button class="chip" data-km="10">10<small>km</small></button>
+          <button class="chip" data-km="15">15<small>km</small></button>
+        </div>
+        <div class="slider-row">
+          <input id="in-dist" class="slider" type="range" min="1" max="30" step="0.5" value="5">
+          <output id="out-dist" class="slider-out">5.0 km</output>
+        </div>
+      </div>
+
+      <div class="card">
+        <label class="field-label">コースの形</label>
+        <div class="seg" id="seg-mode">
+          <button class="seg-btn is-on" data-mode="loop">
+            <b>周回</b><em>出発地に戻る／景色が変わる</em>
+          </button>
+          <button class="seg-btn" data-mode="out_back">
+            <b>往復</b><em>折り返して同じ道を戻る</em>
+          </button>
+          <button class="seg-btn" data-mode="one_way">
+            <b>片道</b><em>目的地まで走りきる</em>
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <label class="field-label">立ち寄りたい場所</label>
+        <div class="chips" id="cat-chips">
+          <button class="chip chip-sm is-on" data-cat="any">おまかせ</button>
+          <button class="chip chip-sm" data-cat="scenery">景色・公園</button>
+          <button class="chip chip-sm" data-cat="landmark">名所・神社仏閣</button>
+          <button class="chip chip-sm" data-cat="food">カフェ・飲食</button>
+        </div>
+        <div class="hint">Googleの<b>クチコミ件数</b>が多い順に優先して経由します。</div>
+      </div>
+
+      <button class="btn-primary" id="btn-search">
+        <span class="btn-label">コースを探す</span>
+      </button>
+
+      <div id="search-progress" class="progress hidden">
+        <div class="progress-bar"><i id="progress-fill"></i></div>
+        <div class="progress-text" id="progress-text">検索中…</div>
+      </div>
+
+      <div id="results"></div>
+
+      <div class="engine-note" id="engine-note"></div>
+    </div>
+  </section>
+
+  <!-- ============================= コース詳細 ============================= -->
+  <section class="view" id="view-detail" data-view="detail" hidden>
+    <header class="appbar">
+      <button class="icon-btn" id="btn-detail-back" aria-label="戻る">‹</button>
+      <div class="appbar-title"><span class="brand2" id="detail-title">コース</span></div>
+      <span class="icon-btn placeholder"></span>
+    </header>
+    <div id="map" class="map"></div>
+    <div class="detail-sheet" id="detail-sheet"></div>
+  </section>
+
+  <!-- ============================= 走る ============================= -->
+  <section class="view" id="view-run" data-view="run" hidden>
+    <header class="appbar">
+      <div class="appbar-title"><span class="brand2">走る</span></div>
+      <span class="badge" id="gps-badge">GPS —</span>
+    </header>
+    <div class="scroll">
+      <div class="run-target hidden" id="run-target"></div>
+
+      <div class="run-hero">
+        <div class="run-dist"><span id="run-km">0.00</span><small>km</small></div>
+        <div class="run-sub">
+          <div><span id="run-time">0:00</span><em>タイム</em></div>
+          <div><span id="run-pace">–:––</span><em>平均ペース /km</em></div>
+          <div><span id="run-now">–:––</span><em>現在ペース /km</em></div>
+        </div>
+      </div>
+
+      <div class="run-controls">
+        <button class="btn-run" id="btn-run-start">スタート</button>
+        <button class="btn-run btn-run-sub hidden" id="btn-run-pause">一時停止</button>
+        <button class="btn-run btn-run-stop hidden" id="btn-run-stop">終了して保存</button>
+      </div>
+
+      <div class="card" id="splits-card" hidden>
+        <label class="field-label">スプリット</label>
+        <div id="splits"></div>
+      </div>
+
+      <div class="hint hint-block">
+        走行中は画面を消さないでください（iPhoneのSafariはバックグラウンドでGPSを記録できません）。<br>
+        自動で画面が消えないようスリープ抑止をかけています。
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 履歴 ============================= -->
+  <section class="view" id="view-log" data-view="log" hidden>
+    <header class="appbar">
+      <div class="appbar-title"><span class="brand2">履歴とペース</span></div>
+      <button class="icon-btn" id="btn-export-all" aria-label="書き出し">⤓</button>
+    </header>
+    <div class="scroll">
+      <div class="card stat-card">
+        <div class="stat-grid">
+          <div><b id="st-count">0</b><em>記録本数</em></div>
+          <div><b id="st-total">0.0</b><em>累計 km</em></div>
+          <div><b id="st-pace">–:––</b><em>基準ペース /km</em></div>
+        </div>
+        <div class="hint" id="st-pace-src"></div>
+      </div>
+      <div id="log-list"></div>
+    </div>
+  </section>
+
+  <!-- ============================= 設定 ============================= -->
+  <section class="view" id="view-settings" data-view="settings" hidden>
+    <header class="appbar">
+      <div class="appbar-title"><span class="brand2">設定</span></div>
+      <span class="icon-btn placeholder"></span>
+    </header>
+    <div class="scroll">
+
+      <div class="card">
+        <label class="field-label">データソース</label>
+        <div class="seg seg-2" id="seg-engine">
+          <button class="seg-btn" data-engine="google"><b>Google マップ</b><em>クチコミ件数で厳選（APIキー必要）</em></button>
+          <button class="seg-btn is-on" data-engine="osm"><b>オープンデータ</b><em>キー不要ですぐ使える</em></button>
+        </div>
+        <label class="field-label mt" for="in-key">Google Maps Platform APIキー</label>
+        <input id="in-key" class="input" type="text" placeholder="AIza…" autocomplete="off" spellcheck="false">
+        <div class="row mt-s">
+          <button class="btn-ghost wide" id="btn-key-save">保存して有効化</button>
+          <button class="btn-ghost" id="btn-key-clear">削除</button>
+        </div>
+        <div class="hint" id="key-status"></div>
+        <details class="acc">
+          <summary>APIキーの取り方（3分）</summary>
+          <ol class="steps">
+            <li>Google Cloud Console → プロジェクト作成</li>
+            <li>「APIとサービス」で <b>Maps JavaScript API</b> / <b>Places API (New)</b> / <b>Directions API</b> / <b>Geocoding API</b> を有効化</li>
+            <li>「認証情報」→ APIキーを作成</li>
+            <li>キーの制限 → アプリケーションの制限で <b>ウェブサイト</b> を選び、
+              <code id="referrer-hint">https://takase-creator.github.io/*</code> を追加</li>
+            <li>上の欄に貼り付けて保存</li>
+          </ol>
+          <p class="hint">キーはこの端末のブラウザ内（localStorage）にだけ保存され、どこにも送信されません。個人利用の頻度なら Google の無料枠（SKUごとに月5,000回）に収まります。</p>
+        </details>
+      </div>
+
+      <div class="card">
+        <label class="field-label">基準ペース</label>
+        <div class="seg seg-2" id="seg-pace-src">
+          <button class="seg-btn is-on" data-src="auto"><b>自動</b><em>記録した走りから算出</em></button>
+          <button class="seg-btn" data-src="manual"><b>手動</b><em>自分で指定する</em></button>
+        </div>
+        <div class="pace-row mt">
+          <input id="in-pace-min" class="input input-num" type="number" min="2" max="15" step="1" value="6">
+          <span class="pace-sep">分</span>
+          <input id="in-pace-sec" class="input input-num" type="number" min="0" max="59" step="5" value="0">
+          <span class="pace-sep">秒 / km</span>
+        </div>
+        <div class="hint" id="pace-note"></div>
+      </div>
+
+      <div class="card">
+        <label class="field-label">Apple ヘルスケア連携</label>
+        <p class="hint hint-block">
+          ブラウザからヘルスケアを直接読むことはiOSの仕様上できません。書き出したデータを読み込む形で連携します。
+        </p>
+        <ol class="steps">
+          <li>iPhoneの<b>ヘルスケア</b>アプリ → 右上のプロフィール</li>
+          <li><b>すべてのヘルスケアデータを書き出す</b></li>
+          <li>できた <code>書き出したデータ.zip</code> を解凍し、中の <code>export.xml</code> を選択</li>
+        </ol>
+        <input type="file" id="in-health" accept=".xml,.csv,.txt" class="file-input">
+        <label for="in-health" class="btn-ghost wide as-label">export.xml / CSV を読み込む</label>
+        <div class="hint" id="health-status"></div>
+        <div class="row mt-s">
+          <button class="btn-ghost wide" id="btn-export-health">記録をCSVで書き出す</button>
+        </div>
+        <p class="hint">書き出したCSV／GPXは、ヘルスケアに直接は書き戻せません（iOSの制約）。RunGap・HealthFit などの取り込み対応アプリ経由でヘルスケアに反映できます。</p>
+      </div>
+
+      <div class="card">
+        <label class="field-label">データ</label>
+        <div class="row">
+          <button class="btn-ghost wide" id="btn-wipe">保存データを全消去</button>
+        </div>
+        <div class="hint">出発地履歴・走行記録・ペース設定・APIキーがこの端末から消えます。</div>
+      </div>
+
+      <div class="foot">
+        <div>FRACTAL RUN NAVI <span id="app-version">v1.0.0</span></div>
+        <div class="foot-src" id="foot-src"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= タブバー ============================= -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab is-on" data-tab="route"><span>🗺️</span>コース</button>
+    <button class="tab" data-tab="run"><span>🏃</span>走る</button>
+    <button class="tab" data-tab="log"><span>📈</span>履歴</button>
+    <button class="tab" data-tab="settings"><span>⚙️</span>設定</button>
+  </nav>
+
+  <div id="toast" class="toast"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="js/util.js?v=1"></script>
+<script src="js/store.js?v=1"></script>
+<script src="js/providers.js?v=1"></script>
+<script src="js/planner.js?v=1"></script>
+<script src="js/mapview.js?v=1"></script>
+<script src="js/tracker.js?v=1"></script>
+<script src="js/health.js?v=1"></script>
+<script src="js/app.js?v=1"></script>
+</body>
+</html>
