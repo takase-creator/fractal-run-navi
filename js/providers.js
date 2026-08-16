@@ -60,6 +60,27 @@ RN.providers = (function () {
 
   const logScale = (v, full) => v > 0 ? Math.min(100, 100 * Math.log10(1 + v) / Math.log10(1 + full)) : 0;
 
+  /** point of an axis-aligned bbox closest to `target` (the target itself if inside) */
+  function clampToBB(bb, target) {
+    if (!bb) return null;
+    return {
+      lat: Math.min(bb.maxlat, Math.max(bb.minlat, target.lat)),
+      lng: Math.min(bb.maxlon, Math.max(bb.minlon, target.lng))
+    };
+  }
+
+  /** nearest / farthest distance from `from` to any point of a bbox */
+  function bbRange(from, bb) {
+    const near = U.haversine(from, clampToBB(bb, from));
+    let far = 0;
+    for (const la of [bb.minlat, bb.maxlat]) {
+      for (const lo of [bb.minlon, bb.maxlon]) {
+        far = Math.max(far, U.haversine(from, { lat: la, lng: lo }));
+      }
+    }
+    return { near, far };
+  }
+
   /* ===============================================================
      OSM / open-data provider
      =============================================================== */
@@ -273,11 +294,12 @@ RN.providers = (function () {
         if (!nm) return null;
         if (ORG_RE.test(nm)) return null;
 
-        let lat, lng, area = 0;
+        let lat, lng, area = 0, bb = null;
         if (e.bounds) {
           const b = e.bounds;
           lat = (b.minlat + b.maxlat) / 2;
           lng = (b.minlon + b.maxlon) / 2;
+          bb = { minlat: b.minlat, minlon: b.minlon, maxlat: b.maxlat, maxlon: b.maxlon };
           const h = U.haversine({ lat: b.minlat, lng: b.minlon }, { lat: b.maxlat, lng: b.minlon });
           const w = U.haversine({ lat: b.minlat, lng: b.minlon }, { lat: b.minlat, lng: b.maxlon });
           area = h * w * 0.72;                       // bbox -> rough real footprint
@@ -293,7 +315,7 @@ RN.providers = (function () {
         return {
           id: 'osm/' + e.type + '/' + e.id,
           name: nm,
-          lat, lng, area,
+          lat, lng, area, bb,
           pop: Math.max(5, Math.min(100, pop)),
           reviews: null, rating: null, kind,
           url: null, wiki: t.wikipedia || null
@@ -375,10 +397,15 @@ RN.providers = (function () {
       }
       const solo = wk.filter(w => !claimed.has(w.id) && w.standalone && w.views >= 200);
 
-      // keep only what actually sits in the band
+      /* An 80 ha park is not a point. 代々木公園's centroid is 555 m from
+         Harajuku but the park runs out past 1 km, so judging it by its centre
+         alone would exclude it from a 5 km loop it is perfect for. Area
+         features qualify when the band crosses their footprint anywhere. */
+      const lo = rInner * 0.82, hi = rOuter * 1.18;
       const band = p => {
-        const d = U.haversine(center, p);
-        return d >= rInner * 0.82 && d <= rOuter * 1.18;
+        if (!p.bb) { const d = U.haversine(center, p); return d >= lo && d <= hi; }
+        const r = bbRange(center, p.bb);
+        return r.near <= hi && r.far >= lo;
       };
       const all = dedupe(ov.concat(solo).filter(band), 140)
         .sort((a, b) => b.pop - a.pop)
@@ -601,5 +628,8 @@ RN.providers = (function () {
 
   function get(id) { return id === 'google' ? google_ : osm; }
 
-  return { get, osm, google: google_, iconFor, kindLabel, popLabel, loadGoogle, ringPoints, ringCover };
+  return {
+    get, osm, google: google_, iconFor, kindLabel, popLabel,
+    loadGoogle, ringPoints, ringCover, clampToBB, bbRange
+  };
 })();

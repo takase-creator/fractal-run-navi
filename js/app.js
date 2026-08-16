@@ -89,7 +89,10 @@
     try {
       const res = await provider().geocode(q);
       if (!res.length) { $('#origin-status').textContent = '見つかりませんでした'; U.toast('その住所は見つかりませんでした', true); return null; }
-      state.candidates = res;
+      // geocoders happily return the station building and the station node as
+      // two hits — identical chips help nobody
+      state.candidates = res.filter((c, i) =>
+        !res.slice(0, i).some(p => p.label === c.label && U.haversine(p, c) < 250));
       state.origin = { label: res[0].label, lat: res[0].lat, lng: res[0].lng };
       $('#origin-status').textContent = '📍 ' + (res[0].detail || res[0].label);
       renderCandidates();

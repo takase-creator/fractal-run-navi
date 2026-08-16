@@ -62,16 +62,21 @@ RN.planner = (function () {
    * because moving a stop distorts the total route length.
    */
   function snap(ideal, pois, snapR, used, kindsUsed) {
-    let best = null, bestScore = -1e9;
+    let best = null, bestScore = -1e9, bestAt = null;
     for (const p of pois) {
       if (used.has(p.id)) continue;
-      const d = U.haversine(ideal, p);
+      // for an area feature the stop is wherever the route meets it, not its centre
+      const at = (p.bb && RN.providers.clampToBB(p.bb, ideal)) || { lat: p.lat, lng: p.lng };
+      const d = U.haversine(ideal, at);
       if (d > snapR) continue;
       let s = p.pop - (d / snapR) * 38;
       if (kindsUsed && kindsUsed.has(p.kind)) s -= 12;   // encourage variety
-      if (s > bestScore) { bestScore = s; best = p; }
+      if (s > bestScore) { bestScore = s; best = p; bestAt = at; }
     }
-    return best;
+    if (!best) return null;
+    return (bestAt.lat === best.lat && bestAt.lng === best.lng)
+      ? best
+      : Object.assign({}, best, { lat: bestAt.lat, lng: bestAt.lng });
   }
 
   /** synthetic stop when nothing notable exists out there */
@@ -99,11 +104,23 @@ RN.planner = (function () {
     return { mode: 'loop', theta0, Rc, V, stops, est: chainLength(origin, stops, true) * detour };
   }
 
-  function buildRadialCandidate(origin, pois, legTarget, detour, closed, poi) {
+  /** where along the way to `poi` should the turnaround sit? */
+  function entryPoint(origin, poi, wantStraight) {
+    if (!poi.bb) return poi;
+    const { near, far } = RN.providers.bbRange(origin, poi.bb);
+    const s = Math.max(near, Math.min(far, wantStraight));
+    const aim = U.destPoint(origin, U.bearing(origin, poi), s);
+    const at = RN.providers.clampToBB(poi.bb, aim);
+    return Object.assign({}, poi, { lat: at.lat, lng: at.lng });
+  }
+
+  /** @param straight desired straight-line distance to the turnaround */
+  function buildRadialCandidate(origin, straight, detour, closed, poi) {
+    const stop = entryPoint(origin, poi, straight);
     return {
       mode: closed ? 'out_back' : 'one_way',
-      stops: [poi],
-      est: U.haversine(origin, poi) * detour * (closed ? 2 : 1)
+      stops: [stop],
+      est: U.haversine(origin, stop) * detour * (closed ? 2 : 1)
     };
   }
 
@@ -202,25 +219,25 @@ RN.planner = (function () {
     } else {
       const leg = mode === 'out_back' ? T / 2 : T;
       const closed = mode === 'out_back';
+      const straight = leg / detour;
       const scored = pois.map(p => {
-        const est = U.haversine(origin, p) * detour * (closed ? 2 : 1);
-        return { p, pre: p.pop * 0.7 + 40 * fitness(est, T).fit };
+        const c = buildRadialCandidate(origin, straight, detour, closed, p);
+        return { p, c, pre: p.pop * 0.7 + 40 * fitness(c.est, T).fit };
       }).sort((a, b) => b.pre - a.pre);
 
       const picked = [];
       for (const s of scored) {
         if (picked.length >= 5) break;
         // spread the destinations around so the results are not all the same street
-        if (picked.some(q => U.haversine(q.p, s.p) < leg * 0.35)) continue;
+        if (picked.some(q => U.haversine(q.c.stops[0], s.c.stops[0]) < leg * 0.35)) continue;
         picked.push(s);
       }
-      cands = (picked.length ? picked : scored.slice(0, 5))
-        .map(s => buildRadialCandidate(origin, pois, leg, detour, closed, s.p));
+      cands = (picked.length ? picked : scored.slice(0, 5)).map(s => s.c);
 
       if (!cands.length) {   // nothing found — still give a route of the right length
         for (const b of [0, 90, 180, 270]) {
-          const pt = U.destPoint(origin, b, leg / detour);
-          cands.push(buildRadialCandidate(origin, pois, leg, detour, closed, ghost(pt, b)));
+          const pt = U.destPoint(origin, b, straight);
+          cands.push(buildRadialCandidate(origin, straight, detour, closed, ghost(pt, b)));
         }
         cands = cands.slice(0, 4);
       }
@@ -274,10 +291,10 @@ RN.planner = (function () {
           c = buildLoopCandidate(origin, pois, T, detour / k, r.V, r.theta0);
         } else {
           const closed = r.mode === 'out_back';
-          const wantLeg = (closed ? T / 2 : T) / detour * k;
-          const target = U.destPoint(origin, U.bearing(origin, r.stops[0]), wantLeg);
-          const p = snap(target, pois, wantLeg * 0.35, new Set(), null) || ghost(target, 9);
-          c = buildRadialCandidate(origin, pois, wantLeg, detour, closed, p);
+          const wantStraight = (closed ? T / 2 : T) / detour * k;
+          const target = U.destPoint(origin, U.bearing(origin, r.stops[0]), wantStraight);
+          const p = snap(target, pois, wantStraight * 0.35, new Set(), null) || ghost(target, 9);
+          c = buildRadialCandidate(origin, wantStraight, detour, closed, p);
         }
         const pts = [origin].concat(c.stops.map(s => ({ lat: s.lat, lng: s.lng })));
         if (c.mode !== 'one_way') pts.push(origin);
