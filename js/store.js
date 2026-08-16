@@ -15,7 +15,9 @@ RN.store = (function () {
       lastMode: 'loop',        // 'loop' | 'out_back' | 'one_way'
       lastCat: 'any',
       hills: 'any',            // 'any' | 'flat' | 'hilly'
-      followMap: true          // keep the live map centred on the runner
+      followMap: true,         // keep the live map centred on the runner
+      shareStyle: 'standard',  // 'standard' | 'short' | 'detailed'
+      shareTags: '#ランニング #ランナーさんと繋がりたい'
     },
     origins: [],               // [{label, lat, lng, at}]
     runs: [],                  // [{id, start, end, movingSec, dist, path:[[lat,lng,t]], splits:[], plan}]

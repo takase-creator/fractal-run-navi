@@ -368,6 +368,7 @@
       <div class="d-actions">
         <button class="btn-primary" id="btn-open-gmaps" style="margin-bottom:0">Google マップでナビを開く</button>
         <button class="btn-ghost wide" id="btn-run-this">このコースで走る（記録開始）</button>
+        <button class="btn-ghost wide" id="btn-sns-course">SNS用のテキストをつくる</button>
         <button class="btn-ghost wide" id="btn-share">コースを共有 / GPX保存</button>
       </div>`;
 
@@ -427,6 +428,7 @@
       window.open(url, '_blank', 'noopener');
     };
     $('#btn-run-this').onclick = () => startRunWithPlan(r);
+    $('#btn-sns-course').onclick = () => openShare(r);
     $('#btn-share').onclick = () => shareRoute(r);
   }
 
@@ -588,8 +590,123 @@ ${pts}
     const saved = RN.tracker.stop();
     RN.mapview.liveReset('runmap');
     pendingPlan = null; pendingCourse = null; offCount = 0;
-    if (saved) { U.toast(`${(saved.dist / 1000).toFixed(2)}km を保存しました`); show('log'); }
-    else { U.toast('記録が短すぎたため保存しませんでした'); renderRun(null); }
+    if (saved) {
+      U.toast(`${(saved.dist / 1000).toFixed(2)}km を保存しました`);
+      renderLog();
+      // land on the finished run itself — this is the moment you want to post it
+      openRunDetail(saved);
+    } else { U.toast('記録が短すぎたため保存しませんでした'); renderRun(null); }
+  };
+
+  /* =============== SNS共有 =============== */
+  const shareState = { src: null, style: 'standard', cardURL: null };
+
+  function openShare(src) {
+    shareState.src = src;
+    shareState.style = S.settings.get('shareStyle') || 'standard';
+    $('#share-tags').value = S.settings.get('shareTags') || '';
+    $('#card-preview').hidden = true;
+    $('#card-preview').innerHTML = '';
+    $('#share-card-send').classList.add('hidden');
+    $('#share-card').classList.remove('hidden');
+    if (shareState.cardURL) { URL.revokeObjectURL(shareState.cardURL); shareState.cardURL = null; }
+
+    const chips = $('#share-styles');
+    chips.innerHTML = '';
+    Object.keys(RN.share.STYLES).forEach(k => {
+      const b = U.el('button', 'chip chip-sm' + (k === shareState.style ? ' is-on' : ''),
+        RN.share.STYLES[k].label);
+      b.onclick = () => {
+        shareState.style = k;
+        S.settings.set('shareStyle', k);
+        U.$$('#share-styles .chip').forEach(x => x.classList.toggle('is-on', x === b));
+        paintShareText();
+      };
+      chips.appendChild(b);
+    });
+
+    paintShareText();
+    $('#share-modal').hidden = false;
+  }
+
+  function paintShareText() {
+    const t = RN.share.build(shareState.src, shareState.style, $('#share-tags').value);
+    $('#share-text').value = t;
+    updateCount();
+  }
+
+  function updateCount() {
+    const t = $('#share-text').value;
+    // X counts most CJK as 2 units against a 280 budget
+    const units = Array.from(t).reduce((a, ch) => a + (/[\x00-\x7F]/.test(ch) ? 1 : 2), 0);
+    const over = units > 280;
+    $('#share-count').innerHTML = `${Array.from(t).length}文字`
+      + `　／　X換算 <b style="color:${over ? 'var(--danger)' : 'var(--fg2)'}">${units}</b>/280`
+      + (over ? '　<span style="color:var(--danger)">Xには長すぎます</span>' : '');
+  }
+
+  $('#share-text').addEventListener('input', updateCount);
+  $('#share-tags').addEventListener('input', () => {
+    S.settings.set('shareTags', $('#share-tags').value);
+    paintShareText();
+  });
+
+  function closeShare() {
+    $('#share-modal').hidden = true;
+    if (shareState.cardURL) { URL.revokeObjectURL(shareState.cardURL); shareState.cardURL = null; }
+  }
+  $('#share-close').onclick = closeShare;
+  $('#share-back').onclick = closeShare;
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeShare(); });
+
+  // must stay synchronous: iOS Safari rejects a clipboard write that is not
+  // reached directly from the tap handler
+  $('#share-copy').onclick = () => {
+    const ta = $('#share-text');
+    const text = ta.value;
+    RN.share.copy(text).then(ok => {
+      if (ok) { U.toast('コピーしました。SNSに貼り付けてください'); return; }
+      // clipboard access can be refused (私用ブラウザ設定など). Select the text
+      // so the fallback is one long-press away instead of a dead end.
+      ta.focus(); ta.select();
+      try { ta.setSelectionRange(0, ta.value.length); } catch (e) { }
+      U.toast('自動コピーできませんでした。選択したので長押し→コピーしてください', true);
+    });
+  };
+
+  $('#share-card').onclick = async () => {
+    try {
+      const cv = RN.share.card(shareState.src, { size: 1080 });
+      const box = $('#card-preview');
+      box.innerHTML = '';
+      box.appendChild(cv);
+      box.hidden = false;
+      $('#share-card').classList.add('hidden');
+      $('#share-card-send').classList.remove('hidden');
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (e) {
+      U.toast('画像を作成できませんでした（GPS軌跡がない記録かもしれません）', true);
+    }
+  };
+
+  $('#share-card-send').onclick = async () => {
+    const blob = await RN.share.cardBlob(shareState.src, { size: 1080 });
+    if (!blob) return U.toast('画像を作成できませんでした', true);
+    const d = RN.share.digest(shareState.src);
+    const name = `run-${d.at ? U.ymd(d.at).replace(/\//g, '') : 'course'}-${(d.dist / 1000).toFixed(1)}km.png`;
+    const file = new File([blob], name, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], text: $('#share-text').value });
+        return;
+      } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    if (shareState.cardURL) URL.revokeObjectURL(shareState.cardURL);
+    shareState.cardURL = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = shareState.cardURL; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    U.toast('画像を保存しました');
   };
 
   /* =============== 履歴 =============== */
@@ -651,15 +768,20 @@ ${pts}
         if (!confirm('この記録を削除しますか？')) return;
         S.deleteRun(r.id); renderLog();
       };
-      item.onclick = () => {
-        if (!r.path || r.path.length < 2) return U.toast('この記録にはGPS軌跡がありません');
-        state.route = null;
-        show('detail');
-        $('#detail-title').textContent = U.ymdhm(r.start);
-        $('#btn-star').hidden = true;
-        RN.mapview.showTrack(r, 'map');
-        const eta = r.movingSec;
-        $('#detail-sheet').innerHTML = `
+      item.onclick = () => openRunDetail(r);
+      box.appendChild(item);
+    });
+  }
+
+  function openRunDetail(r) {
+    if (!r.path || r.path.length < 2) return U.toast('この記録にはGPS軌跡がありません');
+    state.route = null;
+    show('detail');
+    $('#detail-title').textContent = U.ymdhm(r.start);
+    $('#btn-star').hidden = true;
+    RN.mapview.showTrack(r, 'map');
+    const eta = r.movingSec;
+    $('#detail-sheet').innerHTML = `
           <div class="sheet-grab"></div>
           <div class="d-nums">
             <div><b>${(r.dist / 1000).toFixed(2)}</b><em>km</em></div>
@@ -669,15 +791,16 @@ ${pts}
           <ul class="d-list">${(r.splits || []).map(s =>
           `<li><div class="d-ico">${s.km}</div><div class="d-body"><div class="d-name">${s.km} km 地点</div>
              <div class="d-sub">ラップ ${U.pace(s.sec)} /km</div></div></li>`).join('')}</ul>
-          <div class="d-actions"><button class="btn-ghost wide" id="btn-gpx">GPXで書き出す</button></div>`;
-        $('#btn-gpx').onclick = () => {
-          U.download(`run-${U.ymd(r.start).replace(/\//g, '')}-${(r.dist / 1000).toFixed(1)}km.gpx`,
-            RN.tracker.toGPX(r), 'application/gpx+xml');
-          U.toast('GPXを保存しました');
-        };
-      };
-      box.appendChild(item);
-    });
+          <div class="d-actions">
+            <button class="btn-primary" id="btn-sns" style="margin-bottom:0">SNS用のテキストをつくる</button>
+            <button class="btn-ghost wide" id="btn-gpx">GPXで書き出す</button>
+          </div>`;
+    $('#btn-sns').onclick = () => openShare(r);
+    $('#btn-gpx').onclick = () => {
+      U.download(`run-${U.ymd(r.start).replace(/\//g, '')}-${(r.dist / 1000).toFixed(1)}km.gpx`,
+        RN.tracker.toGPX(r), 'application/gpx+xml');
+      U.toast('GPXを保存しました');
+    };
   }
 
   $('#btn-export-all').onclick = () => {
