@@ -100,6 +100,12 @@ RN.providers = (function () {
     return false;
   }
 
+  /** is the OSM stack currently pushing back? the UI says so rather than
+      appearing to hang while the backoff waits */
+  function osmThrottled() {
+    return Date.now() < osmPenaltyUntil ? Math.round(osmGap / 1000) : 0;
+  }
+
   /** run `fn` through the limiter, retrying once or twice on server pushback */
   async function osmTry(fn, attempts) {
     attempts = attempts || 3;
@@ -630,6 +636,6 @@ RN.providers = (function () {
 
   return {
     get, osm, google: google_, iconFor, kindLabel, popLabel,
-    loadGoogle, ringPoints, ringCover, clampToBB, bbRange
+    loadGoogle, ringPoints, ringCover, clampToBB, bbRange, osmThrottled
   };
 })();

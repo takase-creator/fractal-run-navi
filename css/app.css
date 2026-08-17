@@ -29,6 +29,9 @@ body{
 }
 #app{height:100%;display:flex;flex-direction:column}
 .hidden{display:none !important}
+/* a class selector beats the UA's [hidden] rule, so any element given an
+   explicit display (.wx, .modal, …) would stay visible while marked hidden */
+[hidden]{display:none !important}
 
 /* ---------- view ---------- */
 .view{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg)}
@@ -46,6 +49,7 @@ body{
   border-bottom:1px solid var(--line);
   position:sticky;top:0;z-index:20;
 }
+.brand-mark{flex:0 0 auto;display:block;width:26px;height:auto;opacity:.95}
 .appbar-title{flex:1;display:flex;align-items:baseline;gap:7px;min-width:0}
 .brand{font-size:11px;letter-spacing:.22em;color:var(--fg3);font-weight:700}
 .brand2{font-size:18px;font-weight:800;letter-spacing:.02em;
@@ -345,6 +349,20 @@ body{
 .card-preview{margin-top:12px;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
 .card-preview canvas{display:block;width:100%;height:auto}
 .share-actions-note{font-size:11px;color:var(--fg3);text-align:center;margin-top:9px;line-height:1.7}
+
+/* ---------- update prompt ---------- */
+.update-bar{
+  position:fixed;left:12px;right:12px;bottom:calc(72px + var(--safe-b));z-index:1500;
+  display:flex;align-items:center;gap:10px;
+  background:var(--card2);border:1px solid var(--accent);border-radius:12px;
+  padding:11px 12px;font-size:13px;box-shadow:0 8px 26px rgba(0,0,0,.55);
+  max-width:600px;margin:0 auto;
+}
+.update-bar span{flex:1}
+.update-btn{border:0;border-radius:9px;padding:8px 14px;font-size:13px;font-weight:800;
+  background:linear-gradient(100deg,var(--accent),var(--accent2));color:#04231b;
+  cursor:pointer;font-family:inherit}
+.update-x{border:0;background:none;color:var(--fg3);font-size:14px;cursor:pointer;padding:4px}
 
 /* ---------- toast ---------- */
 .toast{

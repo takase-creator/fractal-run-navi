@@ -130,14 +130,15 @@
 
   /* =============== 距離 / モード / カテゴリ =============== */
   const slider = $('#in-dist'), out = $('#out-dist');
+  const distChips = $$('#dist-chips .chip').concat($$('#dist-chips2 .chip'));
   function setKm(km, fromSlider) {
     state.km = km;
     S.settings.set('lastKm', km);
     out.textContent = km.toFixed(1) + ' km';
     if (!fromSlider) slider.value = km;
-    $$('#dist-chips .chip').forEach(c => c.classList.toggle('is-on', +c.dataset.km === km));
+    distChips.forEach(c => c.classList.toggle('is-on', Math.abs(+c.dataset.km - km) < 0.05));
   }
-  $$('#dist-chips .chip').forEach(c => c.onclick = () => setKm(+c.dataset.km));
+  distChips.forEach(c => c.onclick = () => setKm(+c.dataset.km));
   slider.oninput = () => setKm(+slider.value, true);
 
   $$('#seg-mode .seg-btn').forEach(b => b.onclick = () => {
@@ -175,15 +176,24 @@
   /* =============== 検索 =============== */
   const btnSearch = $('#btn-search');
 
+  let lastProgress = { frac: 0, text: '検索中…' };
   function progress(frac, text) {
     $('#search-progress').classList.remove('hidden');
     $('#progress-fill').style.width = Math.round(frac * 100) + '%';
-    if (text) {
-      // the open-data servers are shared and rate-limited, so set the expectation
-      const slow = engineId() === 'osm' ? '（オープンデータの共有サーバー利用のため20〜40秒かかります）' : '';
-      $('#progress-text').innerHTML = U.esc(text) + (slow ? `<br><span style="opacity:.6">${slow}</span>` : '');
+    if (text) lastProgress = { frac, text };
+    text = text || lastProgress.text;
+    let note = '';
+    if (engineId() === 'osm') {
+      const gap = PV.osmThrottled();
+      note = gap
+        // otherwise a backoff wait is indistinguishable from a hang
+        ? `<span style="color:var(--warn)">共有サーバーが混雑しています。${gap}秒間隔まで落として順番待ち中…</span>`
+        : '<span style="opacity:.6">（オープンデータの共有サーバー利用のため20〜40秒かかります）</span>';
     }
+    $('#progress-text').innerHTML = U.esc(text) + (note ? '<br>' + note : '');
   }
+  // throttling can begin mid-search, so refresh the notice on a timer too
+  setInterval(() => { if (state.searching) progress(lastProgress.frac); }, 3000);
 
   async function runSearch(reroll) {
     if (state.searching) { state.searching.aborted = true; return; }
@@ -228,7 +238,19 @@
       if (!routes.length) U.toast('条件に合うコースが見つかりませんでした', true);
     } catch (e) {
       if (String(e.message) === 'ABORT') U.toast('検索を中止しました');
-      else { console.error(e); U.toast(e.message || '検索に失敗しました', true); }
+      else {
+        console.error(e);
+        U.toast(e.message || '検索に失敗しました', true);
+        // the open-data servers fail transiently; make retrying one tap
+        const box = $('#results');
+        box.innerHTML = '';
+        const card = U.el('div', 'card');
+        card.innerHTML = `<div class="hint hint-block">${U.esc(e.message || '検索に失敗しました')}</div>`;
+        const btn = U.el('button', 'btn-ghost wide', 'もう一度試す');
+        btn.onclick = () => runSearch(false);
+        card.appendChild(btn);
+        box.appendChild(card);
+      }
       if (state.results.length) $('#btn-reroll').classList.remove('hidden');
     } finally {
       state.searching = null;
@@ -736,14 +758,30 @@ ${pts}
     });
   }
 
+  /** start of this week (Monday) and this month, in local time */
+  function periodStarts() {
+    const now = new Date();
+    const wd = (now.getDay() + 6) % 7;                 // Mon = 0
+    const week = new Date(now.getFullYear(), now.getMonth(), now.getDate() - wd).getTime();
+    const month = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    return { week, month };
+  }
+
   function renderLog() {
     renderSaved();
     const runs = S.runs();
     const pm = S.paceModel(state.km * 1000);
-    $('#st-count').textContent = runs.length;
-    $('#st-total').textContent = (runs.reduce((a, r) => a + r.dist, 0) / 1000).toFixed(1);
+    const { week, month } = periodStarts();
+    const sum = from => runs.filter(r => r.start >= from).reduce((a, r) => a + r.dist, 0) / 1000;
+    const wk = sum(week), mo = sum(month);
+    $('#st-week').textContent = wk.toFixed(1);
+    $('#st-month').textContent = mo.toFixed(1);
     $('#st-pace').textContent = U.pace(pm.sec);
     $('#st-pace-src').textContent = '算出元：' + pm.src;
+    const nWk = runs.filter(r => r.start >= week).length;
+    const nMo = runs.filter(r => r.start >= month).length;
+    $('#st-totals').textContent =
+      `今週 ${nWk}本 ／ 今月 ${nMo}本 ／ 累計 ${runs.length}本 ${(runs.reduce((a, r) => a + r.dist, 0) / 1000).toFixed(1)}km`;
 
     const box = $('#log-list');
     box.innerHTML = '';
@@ -910,6 +948,19 @@ ${pts}
     S.wipe(); location.reload();
   };
 
+  function showUpdateBar() {
+    if ($('#update-bar')) return;
+    const bar = U.el('div', 'update-bar');
+    bar.id = 'update-bar';
+    bar.innerHTML = '<span>新しいバージョンがあります</span>';
+    const b = U.el('button', 'update-btn', '更新');
+    b.onclick = () => location.reload();
+    const x = U.el('button', 'update-x', '✕');
+    x.onclick = () => bar.remove();
+    bar.appendChild(b); bar.appendChild(x);
+    document.getElementById('app').appendChild(bar);
+  }
+
   /* =============== boot =============== */
   function boot() {
     setKm(state.km);
@@ -943,7 +994,21 @@ ${pts}
     }
 
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(() => { });
+      navigator.serviceWorker.register('sw.js').then(reg => {
+        // A standalone PWA can sit on a stale build for days. When a new worker
+        // finishes installing, offer the reload instead of waiting it out.
+        reg.addEventListener('updatefound', () => {
+          const sw = reg.installing;
+          if (!sw) return;
+          sw.addEventListener('statechange', () => {
+            if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+              if (RN.tracker.isActive()) return;      // never interrupt a run
+              showUpdateBar();
+            }
+          });
+        });
+        setInterval(() => reg.update().catch(() => { }), 30 * 60e3);
+      }).catch(() => { });
     }
     window.addEventListener('beforeunload', e => {
       if (RN.tracker.isActive()) { e.preventDefault(); e.returnValue = ''; }
